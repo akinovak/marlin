@@ -177,7 +177,8 @@ pub(crate) fn arithmetize_matrix<F: PrimeField>(
     for (r, row) in joint_matrix.into_iter().enumerate() {
         for i in row {
             let row_val = elems[r];
-            let col_val = elems[output_domain.reindex_by_subdomain(input_domain, *i)];
+            // let col_val = elems[output_domain.reindex_by_subdomain(input_domain, *i)];
+            let col_val = elems[*i];
 
             // We are dealing with the transpose of M
             row_vec.push(col_val);
@@ -287,122 +288,4 @@ pub(crate) fn make_matrices_square_for_prover<F: PrimeField>(cs: ConstraintSyste
         cs.num_constraints(),
         "padding failed!"
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ark_relations::r1cs::Matrix;
-    use ark_std::{collections::BTreeMap, UniformRand};
-
-    use ark_bls12_381::Fr as F;
-    use ark_ff::{One, Zero};
-    use ark_poly::EvaluationDomain;
-
-    fn entry(matrix: &Matrix<F>, row: usize, col: usize) -> F {
-        matrix[row]
-            .iter()
-            .find_map(|(f, i)| (i == &col).then(|| *f))
-            .unwrap_or(F::zero())
-    }
-
-    #[test]
-    fn check_arithmetization() {
-        let a = vec![
-            vec![(F::one(), 1), (F::one(), 2)],
-            vec![(F::one(), 3)],
-            vec![(F::one(), 3)],
-            vec![(F::one(), 0), (F::one(), 1), (F::one(), 5)],
-            vec![(F::one(), 1), (F::one(), 2), (F::one(), 6)],
-            vec![(F::one(), 2), (F::one(), 5), (F::one(), 7)],
-            vec![(F::one(), 3), (F::one(), 4), (F::one(), 6)],
-            vec![(F::one(), 0), (F::one(), 6), (F::one(), 7)],
-        ];
-
-        let b = vec![
-            vec![],
-            vec![(F::one(), 1)],
-            vec![(F::one(), 0)],
-            vec![(F::one(), 2)],
-            vec![(F::one(), 3)],
-            vec![(F::one(), 4)],
-            vec![(F::one(), 5)],
-            vec![(F::one(), 6)],
-        ];
-
-        let c = vec![
-            vec![],
-            vec![(F::one(), 7)],
-            vec![],
-            vec![],
-            vec![],
-            vec![(F::one(), 3)],
-            vec![],
-            vec![],
-        ];
-        let joint_matrix = crate::ahp::indexer::sum_matrices(&a, &b, &c);
-        let num_non_zero = dbg!(num_non_zero(&joint_matrix));
-        let interpolation_domain = EvaluationDomain::new(num_non_zero).unwrap();
-        let output_domain = EvaluationDomain::new(2 + 6).unwrap();
-        let input_domain = EvaluationDomain::new(2).unwrap();
-        let joint_arith = arithmetize_matrix(
-            &joint_matrix,
-            &a,
-            &b,
-            &c,
-            interpolation_domain,
-            output_domain,
-            input_domain,
-        );
-        let inverse_map = output_domain
-            .elements()
-            .enumerate()
-            .map(|(i, e)| (e, i))
-            .collect::<BTreeMap<_, _>>();
-        let elements = output_domain.elements().collect::<Vec<_>>();
-        let reindexed_inverse_map = (0..output_domain.size())
-            .map(|i| {
-                let reindexed_i = output_domain.reindex_by_subdomain(input_domain, i);
-                (elements[reindexed_i], i)
-            })
-            .collect::<BTreeMap<_, _>>();
-
-        let eq_poly_vals: BTreeMap<F, F> = output_domain
-            .elements()
-            .zip(output_domain.batch_eval_unnormalized_bivariate_lagrange_poly_with_same_inputs())
-            .collect();
-
-        let mut rng = ark_std::test_rng();
-        let eta_a = F::rand(&mut rng);
-        let eta_b = F::rand(&mut rng);
-        let eta_c = F::rand(&mut rng);
-        for (k_index, k) in interpolation_domain.elements().enumerate() {
-            let row_val = joint_arith.row.evaluate(&k);
-            let col_val = joint_arith.col.evaluate(&k);
-
-            let inverse = (eq_poly_vals[&row_val]).inverse().unwrap();
-            // we're in transpose land.
-
-            let val_a = joint_arith.val_a.evaluate(&k);
-            let val_b = joint_arith.val_b.evaluate(&k);
-            let val_c = joint_arith.val_c.evaluate(&k);
-            assert_eq!(joint_arith.evals_on_K.row[k_index], row_val);
-            assert_eq!(joint_arith.evals_on_K.col[k_index], col_val);
-            assert_eq!(joint_arith.evals_on_K.val_a[k_index], val_a);
-            assert_eq!(joint_arith.evals_on_K.val_b[k_index], val_b);
-            assert_eq!(joint_arith.evals_on_K.val_c[k_index], val_c);
-            if k_index < num_non_zero {
-                let col = *dbg!(reindexed_inverse_map.get(&row_val).unwrap());
-                let row = *dbg!(inverse_map.get(&col_val).unwrap());
-                assert!(joint_matrix[row].binary_search(&col).is_ok());
-                assert_eq!(
-                    eta_a * val_a + eta_b * val_b + eta_c * val_c,
-                    inverse
-                        * (eta_a * entry(&a, row, col)
-                            + eta_b * entry(&b, row, col)
-                            + eta_c * entry(&c, row, col)),
-                );
-            }
-        }
-    }
 }

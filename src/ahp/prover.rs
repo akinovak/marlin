@@ -8,7 +8,7 @@ use crate::ahp::constraint_systems::{
     make_matrices_square_for_prover, pad_input_for_indexer_and_prover, unformat_public_input,
 };
 use crate::{ToString, Vec};
-use ark_ff::{Field, PrimeField, Zero};
+use ark_ff::{Field, PrimeField};
 use ark_poly::{
     univariate::DensePolynomial, EvaluationDomain, Evaluations as EvaluationsOnDomain,
     GeneralEvaluationDomain, Polynomial, UVPolynomial,
@@ -34,7 +34,7 @@ pub struct ProverState<'a, F: PrimeField> {
     /// query bound b
     zk_bound: usize,
 
-    w_poly: Option<LabeledPolynomial<F>>,
+    z_poly: Option<LabeledPolynomial<F>>,
     mz_polys: Option<(LabeledPolynomial<F>, LabeledPolynomial<F>)>,
 
     index: &'a Index<F>,
@@ -157,8 +157,8 @@ impl<F: Field> CanonicalDeserialize for ProverMsg<F> {
 
 /// The first set of prover oracles.
 pub struct ProverFirstOracles<F: Field> {
-    /// The LDE of `w`.
-    pub w: LabeledPolynomial<F>,
+    /// The LDE of `z`.
+    pub z: LabeledPolynomial<F>,
     /// The LDE of `Az`.
     pub z_a: LabeledPolynomial<F>,
     /// The LDE of `Bz`.
@@ -170,7 +170,7 @@ pub struct ProverFirstOracles<F: Field> {
 impl<F: Field> ProverFirstOracles<F> {
     /// Iterate over the polynomials output by the prover in the first round.
     pub fn iter(&self) -> impl Iterator<Item = &LabeledPolynomial<F>> {
-        vec![&self.w, &self.z_a, &self.z_b, &self.mask_poly].into_iter()
+        vec![&self.z, &self.z_a, &self.z_b, &self.mask_poly].into_iter()
     }
 }
 
@@ -293,7 +293,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
             witness_assignment,
             z_a: Some(z_a),
             z_b: Some(z_b),
-            w_poly: None,
+            z_poly: None,
             mz_polys: None,
             zk_bound,
             index,
@@ -316,43 +316,58 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         let v_H = domain_h.vanishing_polynomial().into();
 
-        let x_time = start_timer!(|| "Computing x polynomial and evals");
-        let domain_x = state.domain_x;
-        let x_poly = EvaluationsOnDomain::from_vec_and_domain(
-            state.formatted_input_assignment.clone(),
-            domain_x,
-        )
-        .interpolate();
-        let x_evals = domain_h.fft(&x_poly);
-        end_timer!(x_time);
-
-        let ratio = domain_h.size() / domain_x.size();
-
+        let mut assignment_evals = state.formatted_input_assignment.clone();
         let mut w_extended = state.witness_assignment.clone();
         w_extended.extend(vec![
             F::zero();
             domain_h.size()
-                - domain_x.size()
+                - state.formatted_input_assignment.len()
                 - state.witness_assignment.len()
         ]);
 
-        let w_poly_time = start_timer!(|| "Computing w polynomial");
-        let w_poly_evals = cfg_into_iter!(0..domain_h.size())
-            .map(|k| {
-                if k % ratio == 0 {
-                    F::zero()
-                } else {
-                    w_extended[k - (k / ratio) - 1] - &x_evals[k]
-                }
-            })
-            .collect();
+        assignment_evals.extend(w_extended);
+        assert_eq!(assignment_evals.len(), domain_h.size());
+        let mut z_poly = DensePolynomial::from_coefficients_slice(&domain_h.ifft(&assignment_evals));
+        z_poly += &(&DensePolynomial::from_coefficients_slice(&[F::rand(rng)]) * &v_H);
 
-        let w_poly = &EvaluationsOnDomain::from_vec_and_domain(w_poly_evals, domain_h)
-            .interpolate()
-            + &(&DensePolynomial::from_coefficients_slice(&[F::rand(rng)]) * &v_H);
-        let (w_poly, remainder) = w_poly.divide_by_vanishing_poly(domain_x).unwrap();
-        assert!(remainder.is_zero());
-        end_timer!(w_poly_time);
+
+        // let x_time = start_timer!(|| "Computing x polynomial and evals");
+        // let domain_x = state.domain_x;
+        // let x_poly = EvaluationsOnDomain::from_vec_and_domain(
+        //     state.formatted_input_assignment.clone(),
+        //     domain_x,
+        // )
+        // .interpolate();
+        // let x_evals = domain_h.fft(&x_poly);
+        // end_timer!(x_time);
+
+        // let ratio = domain_h.size() / domain_x.size();
+
+        // let mut w_extended = state.witness_assignment.clone();
+        // w_extended.extend(vec![
+        //     F::zero();
+        //     domain_h.size()
+        //         - domain_x.size()
+        //         - state.witness_assignment.len()
+        // ]);
+
+        // let w_poly_time = start_timer!(|| "Computing w polynomial");
+        // let w_poly_evals = cfg_into_iter!(0..domain_h.size())
+        //     .map(|k| {
+        //         if k % ratio == 0 {
+        //             F::zero()
+        //         } else {
+        //             w_extended[k - (k / ratio) - 1] - &x_evals[k]
+        //         }
+        //     })
+        //     .collect();
+
+        // let w_poly = &EvaluationsOnDomain::from_vec_and_domain(w_poly_evals, domain_h)
+        //     .interpolate()
+        //     + &(&DensePolynomial::from_coefficients_slice(&[F::rand(rng)]) * &v_H);
+        // let (w_poly, remainder) = w_poly.divide_by_vanishing_poly(domain_x).unwrap();
+        // assert!(remainder.is_zero());
+        // end_timer!(w_poly_time);
 
         let z_a_poly_time = start_timer!(|| "Computing z_A polynomial");
         let z_a = state.z_a.clone().unwrap();
@@ -382,25 +397,25 @@ impl<F: PrimeField> AHPForR1CS<F> {
 
         let msg = ProverMsg::EmptyMessage;
 
-        assert!(w_poly.degree() < domain_h.size() - domain_x.size() + zk_bound);
+        // assert!(w_poly.degree() < domain_h.size() - domain_x.size() + zk_bound);
         assert!(z_a_poly.degree() < domain_h.size() + zk_bound);
         assert!(z_b_poly.degree() < domain_h.size() + zk_bound);
         assert!(mask_poly.degree() <= 3 * domain_h.size() + 2 * zk_bound - 3);
 
-        let w = LabeledPolynomial::new("w".to_string(), w_poly, None, Some(1));
+        let z = LabeledPolynomial::new("z".to_string(), z_poly, None, Some(1));
         let z_a = LabeledPolynomial::new("z_a".to_string(), z_a_poly, None, Some(1));
         let z_b = LabeledPolynomial::new("z_b".to_string(), z_b_poly, None, Some(1));
         let mask_poly =
             LabeledPolynomial::new("mask_poly".to_string(), mask_poly.clone(), None, None);
 
         let oracles = ProverFirstOracles {
-            w: w.clone(),
+            z: z.clone(),
             z_a: z_a.clone(),
             z_b: z_b.clone(),
             mask_poly: mask_poly.clone(),
         };
 
-        state.w_poly = Some(w);
+        state.z_poly = Some(z);
         state.mz_polys = Some((z_a, z_b));
         state.mask_poly = Some(mask_poly);
         end_timer!(round_time);
@@ -421,6 +436,25 @@ impl<F: PrimeField> AHPForR1CS<F> {
                 for (coeff, c) in row.iter() {
                     let index = domain_h.reindex_by_subdomain(input_domain, *c);
                     t_evals_on_h[index] += *eta * coeff * r_alpha_x_on_h[r];
+                }
+            }
+        }
+        EvaluationsOnDomain::from_vec_and_domain(t_evals_on_h, domain_h).interpolate()
+    }
+
+    fn calculate_t_without_reindexing<'a>(
+        matrices: impl Iterator<Item = &'a Matrix<F>>,
+        matrix_randomizers: &[F],
+        // input_domain: GeneralEvaluationDomain<F>,
+        domain_h: GeneralEvaluationDomain<F>,
+        r_alpha_x_on_h: Vec<F>,
+    ) -> DensePolynomial<F> {
+        let mut t_evals_on_h = vec![F::zero(); domain_h.size()];
+        for (matrix, eta) in matrices.zip(matrix_randomizers) {
+            for (r, row) in matrix.iter().enumerate() {
+                for (coeff, c) in row.iter() {
+                    // let index = domain_h.reindex_by_subdomain(input_domain, *c);
+                    t_evals_on_h[*c] += *eta * coeff * r_alpha_x_on_h[r];
                 }
             }
         }
@@ -489,33 +523,35 @@ impl<F: PrimeField> AHPForR1CS<F> {
         end_timer!(r_alpha_poly_time);
 
         let t_poly_time = start_timer!(|| "Compute t poly");
-        let t_poly = Self::calculate_t(
+        let t_poly = Self::calculate_t_without_reindexing(
             vec![&state.index.a, &state.index.b, &state.index.c].into_iter(),
             &[eta_a, eta_b, eta_c],
-            state.domain_x,
+            // state.domain_x,
             state.domain_h,
             r_alpha_x_evals,
         );
         end_timer!(t_poly_time);
 
-        let z_poly_time = start_timer!(|| "Compute z poly");
+        // let z_poly_time = start_timer!(|| "Compute z poly");
 
-        let domain_x = GeneralEvaluationDomain::new(state.formatted_input_assignment.len())
-            .ok_or(SynthesisError::PolynomialDegreeTooLarge)
-            .unwrap();
-        let x_poly = EvaluationsOnDomain::from_vec_and_domain(
-            state.formatted_input_assignment.clone(),
-            domain_x,
-        )
-        .interpolate();
-        let w_poly = state.w_poly.as_ref().unwrap();
-        let mut z_poly = w_poly.polynomial().mul_by_vanishing_poly(domain_x);
-        cfg_iter_mut!(z_poly.coeffs)
-            .zip(&x_poly.coeffs)
-            .for_each(|(z, x)| *z += x);
-        assert!(z_poly.degree() < domain_h.size() + zk_bound);
+        // let domain_x = GeneralEvaluationDomain::new(state.formatted_input_assignment.len())
+        //     .ok_or(SynthesisError::PolynomialDegreeTooLarge)
+        //     .unwrap();
+        // let x_poly = EvaluationsOnDomain::from_vec_and_domain(
+        //     state.formatted_input_assignment.clone(),
+        //     domain_x,
+        // )
+        // .interpolate();
+        // let w_poly = state.w_poly.as_ref().unwrap();
+        // let mut z_poly = w_poly.polynomial().mul_by_vanishing_poly(domain_x);
+        // cfg_iter_mut!(z_poly.coeffs)
+        //     .zip(&x_poly.coeffs)
+        //     .for_each(|(z, x)| *z += x);
+        // assert!(z_poly.degree() < domain_h.size() + zk_bound);
 
-        end_timer!(z_poly_time);
+        // end_timer!(z_poly_time);
+
+        let z_poly = state.z_poly.expect("Z must be calculated");
 
         let q_1_time = start_timer!(|| "Compute q_1 poly");
 
@@ -562,7 +598,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
             h_1: LabeledPolynomial::new("h_1".into(), h_1, None, None),
         };
 
-        state.w_poly = None;
+        state.z_poly = None;
         state.verifier_first_msg = Some(*ver_message);
         end_timer!(round_time);
 

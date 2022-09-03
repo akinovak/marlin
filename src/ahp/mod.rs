@@ -39,7 +39,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
     #[rustfmt::skip]
     pub const PROVER_POLYNOMIALS: [&'static str; 9] = [
         // First sumcheck
-        "w", "z_a", "z_b", "mask_poly", "t", "g_1", "h_1",
+        "z", "z_a", "z_b", "mask_poly", "t", "g_1", "h_1",
         // Second sumcheck
         "g_2", "h_2",
     ];
@@ -108,7 +108,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
     /// Construct the linear combinations that are checked by the AHP.
     #[allow(non_snake_case)]
     pub fn construct_linear_combinations<E>(
-        public_input: &[F],
+        _public_input: &[F],
         evals: &E,
         state: &verifier::VerifierState<F>,
     ) -> Result<Vec<LinearCombination<F>>, Error>
@@ -118,14 +118,7 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let domain_h = state.domain_h;
         let domain_k = state.domain_k;
         let k_size = domain_k.size_as_field_element();
-
-        let public_input = constraint_systems::format_public_input(public_input);
-        if !Self::formatted_public_input_is_admissible(&public_input) {
-            return Err(Error::InvalidPublicInputLength);
-        }
-        let x_domain = GeneralEvaluationDomain::new(public_input.len())
-            .ok_or(SynthesisError::PolynomialDegreeTooLarge)?;
-
+        
         let first_round_msg = state.first_round_msg.unwrap();
         let alpha = first_round_msg.alpha;
         let eta_a = first_round_msg.eta_a;
@@ -145,18 +138,10 @@ impl<F: PrimeField> AHPForR1CS<F> {
         let r_alpha_at_beta = domain_h.eval_unnormalized_bivariate_lagrange_poly(alpha, beta);
         let v_H_at_alpha = domain_h.evaluate_vanishing_polynomial(alpha);
         let v_H_at_beta = domain_h.evaluate_vanishing_polynomial(beta);
-        let v_X_at_beta = x_domain.evaluate_vanishing_polynomial(beta);
 
         let z_b_at_beta = evals.get_lc_eval(&z_b, beta)?;
         let t_at_beta = evals.get_lc_eval(&t, beta)?;
         let g_1_at_beta = evals.get_lc_eval(&g_1, beta)?;
-
-        let x_at_beta = x_domain
-            .evaluate_all_lagrange_coefficients(beta)
-            .into_iter()
-            .zip(public_input)
-            .map(|(l, x)| l * &x)
-            .fold(F::zero(), |x, y| x + &y);
 
         #[rustfmt::skip]
         let outer_sumcheck = LinearCombination::new(
@@ -167,8 +152,8 @@ impl<F: PrimeField> AHPForR1CS<F> {
                 (r_alpha_at_beta * (eta_a + eta_c * z_b_at_beta), "z_a".into()),
                 (r_alpha_at_beta * eta_b * z_b_at_beta, LCTerm::One),
 
-                (-t_at_beta * v_X_at_beta, "w".into()),
-                (-t_at_beta * x_at_beta, LCTerm::One),
+                (-t_at_beta, "z".into()),
+                // (-t_at_beta * x_at_beta, LCTerm::One),
 
                 (-v_H_at_beta, "h_1".into()),
                 (-beta * g_1_at_beta, LCTerm::One),
