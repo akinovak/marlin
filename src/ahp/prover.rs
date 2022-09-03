@@ -423,25 +423,6 @@ impl<F: PrimeField> AHPForR1CS<F> {
         Ok((msg, oracles, state))
     }
 
-    fn calculate_t<'a>(
-        matrices: impl Iterator<Item = &'a Matrix<F>>,
-        matrix_randomizers: &[F],
-        input_domain: GeneralEvaluationDomain<F>,
-        domain_h: GeneralEvaluationDomain<F>,
-        r_alpha_x_on_h: Vec<F>,
-    ) -> DensePolynomial<F> {
-        let mut t_evals_on_h = vec![F::zero(); domain_h.size()];
-        for (matrix, eta) in matrices.zip(matrix_randomizers) {
-            for (r, row) in matrix.iter().enumerate() {
-                for (coeff, c) in row.iter() {
-                    let index = domain_h.reindex_by_subdomain(input_domain, *c);
-                    t_evals_on_h[index] += *eta * coeff * r_alpha_x_on_h[r];
-                }
-            }
-        }
-        EvaluationsOnDomain::from_vec_and_domain(t_evals_on_h, domain_h).interpolate()
-    }
-
     fn calculate_t_without_reindexing<'a>(
         matrices: impl Iterator<Item = &'a Matrix<F>>,
         matrix_randomizers: &[F],
